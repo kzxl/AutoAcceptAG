@@ -19,13 +19,15 @@ const PROVIDERS: ProviderDef[] = [
         key: 'antigravity',
         label: 'Antigravity',
         contextKeywords: ['antigravity'],
+        // Safe: ONLY terminal commands — these don't cause navigation or open Agent Manager
         safeCommands: [
-            'antigravity.agent.acceptAgentStep',       // Accept agent workflow step
-            'antigravity.command.accept',               // General accept
-            'antigravity.terminalCommand.accept',       // Accept terminal command
+            'antigravity.terminalCommand.accept',                // Accept terminal command
             'antigravity.prioritized.terminalSuggestion.accept', // Accept terminal suggestion
         ],
+        // Aggressive: these can open Agent Manager, navigate chats, or accept file edits
         aggressiveCommands: [
+            'antigravity.agent.acceptAgentStep',               // ⚠️ Opens Agent Manager when nothing pending
+            'antigravity.command.accept',                       // ⚠️ Generic accept — can navigate between chats
             'antigravity.prioritized.agentAcceptAllInFile',    // Accept ALL changes in file
             'antigravity.prioritized.agentAcceptFocusedHunk',  // Accept focused hunk
             'antigravity.prioritized.supercompleteAccept',     // Accept supercomplete
