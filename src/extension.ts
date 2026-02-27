@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
 
 // ─── Provider definitions with their known commands ───
+// Commands are split into "safe" (terminal/agent flow only) and "aggressive" (file edits, completions)
+// Only safe commands are used by default to prevent unwanted side effects
+
 interface ProviderDef {
     key: string;
     label: string;
     contextKeywords: string[];
-    knownCommands: string[];
+    // Safe: only accept terminal commands and agent workflow steps
+    safeCommands: string[];
+    // Aggressive: accept file edits, completions — can cause jumpy behavior
+    aggressiveCommands: string[];
 }
 
 const PROVIDERS: ProviderDef[] = [
@@ -13,31 +19,34 @@ const PROVIDERS: ProviderDef[] = [
         key: 'antigravity',
         label: 'Antigravity',
         contextKeywords: ['antigravity'],
-        knownCommands: [
-            // Verified from Munkhin/auto-accept-agent repo
-            'antigravity.agent.acceptAgentStep',
-            'antigravity.command.accept',
-            'antigravity.prioritized.agentAcceptAllInFile',
-            'antigravity.prioritized.agentAcceptFocusedHunk',
-            'antigravity.prioritized.supercompleteAccept',
-            'antigravity.terminalCommand.accept',
-            'antigravity.acceptCompletion',
-            'antigravity.prioritized.terminalSuggestion.accept',
+        safeCommands: [
+            'antigravity.agent.acceptAgentStep',       // Accept agent workflow step
+            'antigravity.command.accept',               // General accept
+            'antigravity.terminalCommand.accept',       // Accept terminal command
+            'antigravity.prioritized.terminalSuggestion.accept', // Accept terminal suggestion
+        ],
+        aggressiveCommands: [
+            'antigravity.prioritized.agentAcceptAllInFile',    // Accept ALL changes in file
+            'antigravity.prioritized.agentAcceptFocusedHunk',  // Accept focused hunk
+            'antigravity.prioritized.supercompleteAccept',     // Accept supercomplete
+            'antigravity.acceptCompletion',                     // Accept inline completion
         ],
     },
     {
         key: 'copilot',
         label: 'Copilot',
         contextKeywords: ['copilot'],
-        knownCommands: [
+        safeCommands: [
             'github.copilot.terminal.acceptCommand',
             'github.copilot.chat.acceptTerminalCommand',
-            'github.copilot.acceptSuggestion',
+        ],
+        aggressiveCommands: [
+            'github.copilot.acceptSuggestion',  // Accept inline suggestion — can cause jumps
         ],
     },
 ];
 
-// VS Code built-in chat/terminal commands (always included when master toggle is on)
+// VS Code built-in chat/terminal commands (always included, these are safe)
 const BUILTIN_COMMANDS = [
     'workbench.action.chat.acceptTerminalCommand',
     'workbench.action.chat.runInTerminal',
@@ -140,12 +149,15 @@ function updateStatusBar() {
         .filter(p => config.get<boolean>(`providers.${p.key}`, true))
         .map(p => p.label);
 
+    const aggressiveMode = config.get<boolean>('aggressiveMode', false);
+    const modeLabel = aggressiveMode ? ' ⚡' : '';
+
     if (isEnabled) {
         const providerText = enabledProviders.length > 0
             ? enabledProviders.join(', ')
             : 'None';
-        statusBarItem.text = `$(check) Auto Accept: ON [${providerText}]`;
-        statusBarItem.tooltip = `Auto-accept enabled for: ${providerText}\nClick to disable`;
+        statusBarItem.text = `$(check) Auto Accept: ON [${providerText}]${modeLabel}`;
+        statusBarItem.tooltip = `Auto-accept enabled for: ${providerText}\nMode: ${aggressiveMode ? 'Aggressive (file edits + completions)' : 'Safe (terminal + agent only)'}\nClick to disable`;
         statusBarItem.backgroundColor = undefined;
     } else {
         statusBarItem.text = '$(x) Auto Accept: OFF';
@@ -159,16 +171,23 @@ function updateStatusBar() {
 // ─── Get enabled provider commands ───
 function getEnabledProviderCommands(): string[] {
     const config = vscode.workspace.getConfiguration('autoAcceptAG');
+    const aggressiveMode = config.get<boolean>('aggressiveMode', false);
     const commands: string[] = [];
 
     for (const provider of PROVIDERS) {
         const providerEnabled = config.get<boolean>(`providers.${provider.key}`, true);
         if (providerEnabled) {
-            commands.push(...provider.knownCommands);
+            // Always include safe commands
+            commands.push(...provider.safeCommands);
+
+            // Only include aggressive commands if aggressiveMode is ON
+            if (aggressiveMode) {
+                commands.push(...provider.aggressiveCommands);
+            }
         }
     }
 
-    // Always include built-in commands
+    // Always include built-in commands (these are safe)
     commands.push(...BUILTIN_COMMANDS);
 
     return commands;
@@ -199,19 +218,38 @@ async function discoverAcceptCommands(): Promise<void> {
         .flatMap(p => p.contextKeywords);
 
     // Add built-in context keywords
-    const allContextKeywords = [...enabledContextKeywords, 'chat', 'terminal', 'agent'];
+    const allContextKeywords = [...enabledContextKeywords, 'chat', 'terminal'];
+
+    // Must also contain "terminal" or "agent" to be safe — avoid matching completion/suggestion commands
+    const safeActionKeywords = ['terminal', 'agent', 'chat'];
 
     const fromPatterns = allCommands.filter(cmd => {
         const lowerCmd = cmd.toLowerCase();
+
+        // Must be in relevant context (provider or built-in)
         const isRelevantContext = allContextKeywords.some(kw =>
             lowerCmd.includes(kw)
         );
 
+        // Must contain an accept-like action keyword
         const isAcceptAction = patterns.some(p =>
             lowerCmd.includes(p.toLowerCase())
         );
 
-        return isRelevantContext && isAcceptAction;
+        // Must also be a safe action (related to terminal/agent/chat)
+        const isSafeAction = safeActionKeywords.some(kw =>
+            lowerCmd.includes(kw)
+        );
+
+        // Skip completion/suggestion commands unless aggressive mode
+        const aggressiveMode = config.get<boolean>('aggressiveMode', false);
+        const isCompletionCmd = lowerCmd.includes('completion') || lowerCmd.includes('suggestion') || lowerCmd.includes('supercomplete');
+
+        if (!aggressiveMode && isCompletionCmd) {
+            return false;
+        }
+
+        return isRelevantContext && isAcceptAction && isSafeAction;
     });
 
     // Filter out commands from disabled providers
@@ -236,9 +274,11 @@ async function discoverAndLogCommands() {
     outputChannel.appendLine('═══════════════════════════════════════');
 
     const config = vscode.workspace.getConfiguration('autoAcceptAG');
+    const aggressiveMode = config.get<boolean>('aggressiveMode', false);
 
-    // Log provider status
-    outputChannel.appendLine('\n📊 Provider Status:');
+    // Log provider & mode status
+    outputChannel.appendLine('\n📊 Status:');
+    outputChannel.appendLine(`  Mode: ${aggressiveMode ? '⚡ Aggressive' : '🛡️ Safe'}`);
     for (const provider of PROVIDERS) {
         const enabled = config.get<boolean>(`providers.${provider.key}`, true);
         outputChannel.appendLine(`  ${enabled ? '🟢' : '🔴'} ${provider.label}: ${enabled ? 'ON' : 'OFF'}`);
@@ -259,14 +299,24 @@ async function discoverAndLogCommands() {
 
     outputChannel.appendLine(`\n📋 All chat/terminal/AI commands (${relevantCommands.length}):`);
     relevantCommands.sort().forEach(cmd => {
-        const isAccept = discoveredCommands.includes(cmd);
-        outputChannel.appendLine(`  ${isAccept ? '🟢' : '⚪'} ${cmd}`);
+        const isActive = discoveredCommands.includes(cmd);
+        outputChannel.appendLine(`  ${isActive ? '🟢' : '⚪'} ${cmd}`);
     });
 
     // Re-discover
     await discoverAcceptCommands();
-    outputChannel.appendLine(`\n✅ Accept commands to auto-trigger (${discoveredCommands.length}):`);
+    outputChannel.appendLine(`\n✅ Commands that WILL auto-trigger (${discoveredCommands.length}):`);
     discoveredCommands.forEach(cmd => outputChannel.appendLine(`  → ${cmd}`));
+
+    // Show aggressive commands that are NOT active
+    if (!aggressiveMode) {
+        const allAggressive = PROVIDERS.flatMap(p => p.aggressiveCommands);
+        const availableAggressive = allAggressive.filter(cmd => allCommands.includes(cmd));
+        if (availableAggressive.length > 0) {
+            outputChannel.appendLine(`\n⚠️ Aggressive commands available but INACTIVE (set aggressiveMode=true to enable):`);
+            availableAggressive.forEach(cmd => outputChannel.appendLine(`  ⚡ ${cmd}`));
+        }
+    }
 
     outputChannel.appendLine('═══════════════════════════════════════\n');
 
@@ -276,7 +326,7 @@ async function discoverAndLogCommands() {
         );
     } else {
         vscode.window.showInformationMessage(
-            `Auto Accept AG: Found ${discoveredCommands.length} accept commands. See Output panel.`
+            `Auto Accept AG: Found ${discoveredCommands.length} accept commands (${aggressiveMode ? 'aggressive' : 'safe'} mode). See Output panel.`
         );
     }
 }
@@ -288,14 +338,14 @@ function startPolling() {
     const config = vscode.workspace.getConfiguration('autoAcceptAG');
     const interval = config.get<number>('pollingInterval', 300);
 
-    outputChannel.appendLine(`▶️ Starting polling (every ${interval}ms)`);
+    outputChannel.appendLine(`▶️ Starting polling (every ${interval}ms, ${discoveredCommands.length} commands)`);
 
     pollingTimer = setInterval(async () => {
         if (!isEnabled || discoveredCommands.length === 0) {
             return;
         }
 
-        // Use Promise.allSettled for better performance (parallel execution)
+        // Fire all discovered commands in parallel — unavailable ones silently fail
         await Promise.allSettled(
             discoveredCommands.map(cmd => vscode.commands.executeCommand(cmd))
         );

@@ -50,6 +50,11 @@
           "default": true,
           "description": "Enable auto-accept for GitHub Copilot commands"
         },
+        "autoAcceptAG.aggressiveMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable aggressive mode: also accept file edits and inline completions (may cause jumpy behavior)"
+        },
         "autoAcceptAG.pollingInterval": {
           "type": "number",
           "default": 300,
