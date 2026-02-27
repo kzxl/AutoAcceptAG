@@ -333,6 +333,67 @@ async function discoverAndLogCommands() {
     }
 }
 
+// ─── Get commands safe to fire during polling ───
+// Only returns commands that are truly safe to call repeatedly without side effects.
+// Specifically excludes commands that open Agent Manager or navigate between views.
+function getPollingCommands(): { terminalOnly: string[]; alwaysSafe: string[] } {
+    const config = vscode.workspace.getConfiguration('autoAcceptAG');
+    const aggressiveMode = config.get<boolean>('aggressiveMode', false);
+
+    // Commands that should ONLY fire when a terminal is focused/active
+    const terminalOnly: string[] = [];
+
+    // Commands that are always safe to fire (built-in chat accept commands)
+    const alwaysSafe: string[] = [
+        'workbench.action.chat.acceptTerminalCommand',
+        'workbench.action.chat.runInTerminal',
+        'chat.action.acceptCommand',
+        'chat.acceptTerminalCommand',
+        'workbench.action.terminal.chat.acceptCommand',
+        'workbench.action.terminal.acceptSuggestion',
+    ];
+
+    // Antigravity terminal commands — only fire when terminal is active
+    if (config.get<boolean>('providers.antigravity', true)) {
+        terminalOnly.push(
+            'antigravity.terminalCommand.accept',
+            'antigravity.prioritized.terminalSuggestion.accept',
+        );
+
+        if (aggressiveMode) {
+            // These aggressive commands are risky — only in aggressive mode
+            // Note: acceptAgentStep and command.accept are NEVER included in polling
+            // because they open Agent Manager / navigate chats when nothing is pending
+            alwaysSafe.push(
+                'antigravity.prioritized.agentAcceptAllInFile',
+                'antigravity.prioritized.agentAcceptFocusedHunk',
+                'antigravity.prioritized.supercompleteAccept',
+                'antigravity.acceptCompletion',
+            );
+        }
+    }
+
+    // Copilot terminal commands
+    if (config.get<boolean>('providers.copilot', true)) {
+        terminalOnly.push(
+            'github.copilot.terminal.acceptCommand',
+            'github.copilot.chat.acceptTerminalCommand',
+        );
+
+        if (aggressiveMode) {
+            alwaysSafe.push('github.copilot.acceptSuggestion');
+        }
+    }
+
+    return { terminalOnly, alwaysSafe };
+}
+
+// ─── Check if a terminal is currently focused ───
+function isTerminalFocused(): boolean {
+    return vscode.window.activeTerminal !== undefined
+        && vscode.window.state.focused;
+}
+
 // ─── Polling: Try to auto-accept ───
 function startPolling() {
     stopPolling(); // Clear any existing timer
@@ -340,16 +401,32 @@ function startPolling() {
     const config = vscode.workspace.getConfiguration('autoAcceptAG');
     const interval = config.get<number>('pollingInterval', 300);
 
-    outputChannel.appendLine(`▶️ Starting polling (every ${interval}ms, ${discoveredCommands.length} commands)`);
+    const { terminalOnly, alwaysSafe } = getPollingCommands();
+    const totalCommands = terminalOnly.length + alwaysSafe.length;
+
+    outputChannel.appendLine(`▶️ Starting polling (every ${interval}ms, ${totalCommands} commands: ${terminalOnly.length} terminal-only, ${alwaysSafe.length} always-safe)`);
 
     pollingTimer = setInterval(async () => {
-        if (!isEnabled || discoveredCommands.length === 0) {
+        if (!isEnabled) {
             return;
         }
 
-        // Fire all discovered commands in parallel — unavailable ones silently fail
+        const commandsToFire: string[] = [...alwaysSafe];
+
+        // Only fire terminal commands when a terminal is actually focused
+        if (isTerminalFocused()) {
+            commandsToFire.push(...terminalOnly);
+        }
+
+        if (commandsToFire.length === 0) {
+            return;
+        }
+
+        // Fire commands — each one silently fails if not available
         await Promise.allSettled(
-            discoveredCommands.map(cmd => vscode.commands.executeCommand(cmd))
+            commandsToFire.map(cmd =>
+                vscode.commands.executeCommand(cmd).then(undefined, () => { /* silently ignore */ })
+            )
         );
     }, interval);
 }
