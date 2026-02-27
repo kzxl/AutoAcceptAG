@@ -1,0 +1,84 @@
+{
+  "name": "auto-accept-ag",
+  "displayName": "Auto Accept AG",
+  "description": "Tự động accept terminal commands khi AI (Antigravity/Copilot) đề xuất chạy lệnh trong chat",
+  "version": "0.1.0",
+  "publisher": "phongvo",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "autoAcceptAG.toggle",
+        "title": "Auto Accept AG: Toggle On/Off"
+      },
+      {
+        "command": "autoAcceptAG.discoverCommands",
+        "title": "Auto Accept AG: Discover Accept Commands"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "autoAcceptAG.toggle",
+        "key": "ctrl+shift+f10",
+        "mac": "cmd+shift+f10"
+      }
+    ],
+    "configuration": {
+      "title": "Auto Accept AG",
+      "properties": {
+        "autoAcceptAG.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable auto-accept for AI terminal commands"
+        },
+        "autoAcceptAG.providers.antigravity": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable auto-accept for Antigravity commands"
+        },
+        "autoAcceptAG.providers.copilot": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable auto-accept for GitHub Copilot commands"
+        },
+        "autoAcceptAG.pollingInterval": {
+          "type": "number",
+          "default": 300,
+          "description": "Polling interval in milliseconds to check for accept commands"
+        },
+        "autoAcceptAG.commandPatterns": {
+          "type": "array",
+          "default": [
+            "accept",
+            "approve",
+            "continue",
+            "runCommand",
+            "confirmAction"
+          ],
+          "description": "Keywords to match when discovering accept-related commands"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}
